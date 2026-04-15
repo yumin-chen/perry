@@ -123,6 +123,12 @@ pub const NATIVE_MODULES: &[&str] = &[
     "perry/thread",
     // Perry auto-updater (compareVersions, verifyHash, installUpdate, …)
     "perry/updater",
+    // Perry container subsystem (OCI runtime + Compose orchestration).
+    // Routed through perry-stdlib's container/ module → perry-container-compose.
+    "perry/container",
+    "perry/compose",
+    // Workload graph engine (multi-runtime: oci / microVm / wasm).
+    "perry/workloads",
     // SQLite
     "better-sqlite3",
 ];

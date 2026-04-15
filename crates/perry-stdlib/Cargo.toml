@@ -77,11 +77,23 @@ ids = ["dep:uuid", "dep:nanoid"]
 # Async runtime (tokio) - internal feature
 async-runtime = ["dep:tokio"]
 
+# OCI container subsystem (perry/container, perry/compose, perry/workloads).
+# Pulls in perry-container-compose and exposes the `js_container_*` and
+# `js_compose_*` FFI exports that the codegen dispatch table targets.
+container = ["dep:perry-container-compose", "async-runtime"]
+
 [dependencies]
 perry-runtime = { workspace = true, features = ["stdlib"] }
 # Re-bundle updater symbols into libperry_stdlib.a so user binaries that
 # call `perry/updater` resolve at link time without extra wiring.
 perry-updater = { workspace = true }
+# Container subsystem (gated behind the `container` feature). The stdlib
+# container/ module re-exports `perry_container_compose::*` types and
+# delegates orchestration to `ComposeEngine` / `ContainerBackend`.
+# NOTE: do NOT enable the crate's own `ffi` feature here — it exports a
+# *different* legacy `js_compose_*` shape (YAML-file-path-based) that would
+# collide with stdlib's canonical SPEC §9.1 stack-handle signatures at link.
+perry-container-compose = { workspace = true, optional = true }
 
 thiserror.workspace = true
 anyhow.workspace = true
@@ -183,3 +195,9 @@ clap = { version = "4.4", features = ["derive"] }
 
 # Decimal math (Big.js / Decimal.js)
 rust_decimal = { version = "1.33", features = ["maths"] }
+
+[dev-dependencies]
+# Property tests for the container FFI bridge (gated behind `container` feature
+# at the test-file level via `#[cfg(feature = "container")]`).
+proptest = "1"
+serde_yaml = "0.9"

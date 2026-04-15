@@ -1,0 +1,547 @@
+name: Container Tests
+
+# Automated test suite for perry/container, perry/container-compose,
+# perry/workloads, and perry-container-compose crate.
+#
+# Test layers (ordered fastest → slowest):
+#   1. Unit + property tests  — no runtime, every PR (cargo test --features container)
+#   2. Functional tests       — mock backend, every PR (cargo test --features container,integration)
+#   3. Integration tests      — real podman, on PR + main (PERRY_INTEGRATION_TESTS=1)
+#   4. E2e tests              — full Perry compile + run, on main + tags (PERRY_E2E_TESTS=1)
+#
+# macOS jobs use apple/container (native). Linux jobs use podman.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'crates/perry-container-compose/**'
+      - 'crates/perry-stdlib/src/container/**'
+      - 'crates/perry-hir/src/lower.rs'
+      - 'crates/perry-codegen/src/lower_call.rs'
+      - 'tests/e2e/*.e2e.ts'
+      - '.github/workflows/container-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/perry-container-compose/**'
+      - 'crates/perry-stdlib/src/container/**'
+      - 'crates/perry-hir/src/lower.rs'
+      - 'crates/perry-codegen/src/lower_call.rs'
+      - 'tests/e2e/*.e2e.ts'
+      - '.github/workflows/container-tests.yml'
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Run e2e tests (requires full Perry toolchain)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: container-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PERRY_NO_INSTALL_PROMPT: "1"   # suppress interactive installer in CI
+
+# ---------------------------------------------------------------------------
+# Reusable step fragments (via env + composite actions pattern)
+# ---------------------------------------------------------------------------
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Layer 1 + 2: Unit, property, and functional tests
+  # No container runtime required. Runs on every PR.
+  # ---------------------------------------------------------------------------
+  unit-and-functional:
+    name: Unit + Property + Functional Tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          BEFORE=$(df -h / | tail -1 | awk '{print $4}')
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/*Simulator* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          AFTER=$(df -h / | tail -1 | awk '{print $4}')
+          echo "Disk free: ${BEFORE} -> ${AFTER}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-container-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-container-
+
+      - name: Run unit + property tests (perry-container-compose)
+        run: |
+          cargo test -p perry-container-compose \
+            --features container \
+            -- --test-threads=4
+        env:
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+      - name: Run unit + property tests (perry-stdlib container module)
+        run: |
+          cargo test -p perry-stdlib \
+            --features container \
+            -- --test-threads=4
+        env:
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+      - name: Run functional tests (mock backend, no runtime required)
+        run: |
+          cargo test -p perry-container-compose \
+            --features container \
+            --test functional \
+            -- --test-threads=2
+        env:
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+      - name: Verify NoBackendFound non-interactive error message
+        # Confirms that when no backend is present and stdout is not a TTY,
+        # the runtime returns a plain error with an install hint rather than
+        # hanging waiting for input.
+        run: |
+          cargo test -p perry-container-compose \
+            --features container \
+            -- no_backend_non_interactive \
+            --test-threads=1
+        env:
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+  # ---------------------------------------------------------------------------
+  # Layer 3: Integration tests — macOS with apple/container
+  # Runs on PR + main. apple/container is pre-installed on macos-14 runners.
+  # ---------------------------------------------------------------------------
+  integration-macos:
+    name: Integration Tests (macOS / apple/container)
+    runs-on: macos-14
+    # Only run on PRs targeting main and on pushes to main/tags
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space (macOS)
+        run: |
+          BEFORE=$(df -h / | tail -1 | awk '{print $4}')
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/*Simulator* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          AFTER=$(df -h / | tail -1 | awk '{print $4}')
+          echo "Disk free: ${BEFORE} -> ${AFTER}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: macos-cargo-container-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-container-integration-
+
+      - name: Check apple/container availability
+        id: check_backend
+        run: |
+          if command -v container &>/dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "backend=apple/container" >> "$GITHUB_OUTPUT"
+            container --version
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "apple/container not found — integration tests will be skipped"
+          fi
+
+      - name: Run integration tests (apple/container)
+        if: steps.check_backend.outputs.available == 'true'
+        run: |
+          cargo test -p perry-container-compose \
+            --features container,integration \
+            --test integration \
+            -- --test-threads=1
+        env:
+          PERRY_INTEGRATION_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+      - name: Skip notice
+        if: steps.check_backend.outputs.available != 'true'
+        run: echo "::warning::apple/container not available on this runner — integration tests skipped"
+
+  # ---------------------------------------------------------------------------
+  # Layer 3: Integration tests — Linux with podman
+  # Runs on PR + main. Podman is available on ubuntu-24.04 runners.
+  # ---------------------------------------------------------------------------
+  integration-linux:
+    name: Integration Tests (Linux / podman)
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: linux-cargo-container-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-container-integration-
+
+      - name: Install and start podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y podman
+          # Verify podman is functional
+          podman --version
+          podman info --format '{{.Host.RemoteSocket.Path}}' || true
+
+      - name: Run integration tests (podman)
+        run: |
+          cargo test -p perry-container-compose \
+            --features container,integration \
+            --test integration \
+            -- --test-threads=1
+        env:
+          PERRY_INTEGRATION_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+  # ---------------------------------------------------------------------------
+  # Layer 3: Integration tests — macOS with podman
+  # Validates the podman path on macOS (separate from apple/container).
+  # Runs on main + tags only (slower, requires podman machine).
+  # ---------------------------------------------------------------------------
+  integration-macos-podman:
+    name: Integration Tests (macOS / podman)
+    runs-on: macos-14
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space (macOS)
+        run: |
+          BEFORE=$(df -h / | tail -1 | awk '{print $4}')
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/*Simulator* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          AFTER=$(df -h / | tail -1 | awk '{print $4}')
+          echo "Disk free: ${BEFORE} -> ${AFTER}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: macos-cargo-container-podman-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-container-podman-
+
+      - name: Install podman and start machine
+        run: |
+          brew install podman
+          podman machine init --cpus 2 --memory 2048 --disk-size 20
+          podman machine start
+          # Wait for machine to be ready
+          for i in $(seq 1 30); do
+            if podman machine list --format json | python3 -c "import sys,json; machines=json.load(sys.stdin); exit(0 if any(m.get('Running') for m in machines) else 1)" 2>/dev/null; then
+              echo "Podman machine is running"
+              break
+            fi
+            echo "Waiting for podman machine... ($i/30)"
+            sleep 5
+          done
+          podman --version
+          podman info
+
+      - name: Run integration tests (podman on macOS)
+        run: |
+          cargo test -p perry-container-compose \
+            --features container,integration \
+            --test integration \
+            -- --test-threads=1
+        env:
+          PERRY_INTEGRATION_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+
+      - name: Stop podman machine
+        if: always()
+        run: podman machine stop || true
+
+  # ---------------------------------------------------------------------------
+  # Layer 4: E2e tests — full Perry compile + run
+  # Runs on main + tags, or manually via workflow_dispatch with run_e2e=true.
+  # Tests the complete stack: TypeScript → HIR → codegen → FFI → backend.
+  # ---------------------------------------------------------------------------
+  e2e-macos:
+    name: E2E Tests (macOS / apple/container)
+    runs-on: macos-14
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event.inputs.run_e2e == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space (macOS)
+        run: |
+          BEFORE=$(df -h / | tail -1 | awk '{print $4}')
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/*Simulator* || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/* || true
+          AFTER=$(df -h / | tail -1 | awk '{print $4}')
+          echo "Disk free: ${BEFORE} -> ${AFTER}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: macos-cargo-container-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-container-e2e-
+
+      - name: Build Perry compiler + container stdlib
+        run: cargo build --release -p perry -p perry-runtime -p perry-stdlib --features container
+
+      - name: Check apple/container availability
+        id: check_backend
+        run: |
+          if command -v container &>/dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            container --version
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::apple/container not found — e2e tests will be skipped"
+          fi
+
+      - name: Run e2e tests (container-basic)
+        if: steps.check_backend.outputs.available == 'true'
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- container_basic \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-graph)
+        if: steps.check_backend.outputs.available == 'true'
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_graph \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-refs)
+        if: steps.check_backend.outputs.available == 'true'
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_refs \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-policy)
+        if: steps.check_backend.outputs.available == 'true'
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_policy \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (compose-forgejo) [advisory]
+        # Forgejo pulls a large image — mark advisory so a slow registry
+        # doesn't block the PR gate. Failures are still reported.
+        if: steps.check_backend.outputs.available == 'true'
+        continue-on-error: true
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- compose_forgejo \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "apple/container"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 20
+
+      - name: Upload e2e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-macos
+          path: target/perry-e2e-tests/*.log
+          if-no-files-found: ignore
+
+  e2e-linux:
+    name: E2E Tests (Linux / podman)
+    runs-on: ubuntu-24.04
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event.inputs.run_e2e == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: linux-cargo-container-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-container-e2e-
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y podman
+          podman --version
+
+      - name: Build Perry compiler + container stdlib
+        run: cargo build --release -p perry -p perry-runtime -p perry-stdlib --features container
+
+      - name: Run e2e tests (container-basic)
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- container_basic \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-graph)
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_graph \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-refs)
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_refs \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (workloads-policy)
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- workloads_policy \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 10
+
+      - name: Run e2e tests (compose-forgejo) [advisory]
+        continue-on-error: true
+        run: |
+          cargo test -p perry \
+            --features container \
+            --test e2e \
+            -- compose_forgejo \
+            --test-threads=1
+        env:
+          PERRY_E2E_TESTS: "1"
+          PERRY_CONTAINER_BACKEND: "podman"
+          PERRY_NO_INSTALL_PROMPT: "1"
+        timeout-minutes: 20
+
+      - name: Upload e2e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-linux
+          path: target/perry-e2e-tests/*.log
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Summary gate — required status check for PRs
+  # Passes only when unit+functional pass on both platforms.
+  # Integration and e2e are informational on PRs.
+  # ---------------------------------------------------------------------------
+  container-tests-gate:
+    name: Container Tests Gate
+    runs-on: ubuntu-24.04
+    needs: [unit-and-functional]
+    if: always()
+    steps:
+      - name: Check required jobs
+        run: |
+          if [[ "${{ needs.unit-and-functional.result }}" != "success" ]]; then
+            echo "unit-and-functional failed: ${{ needs.unit-and-functional.result }}"
+            exit 1
+          fi
+          echo "All required container test jobs passed."

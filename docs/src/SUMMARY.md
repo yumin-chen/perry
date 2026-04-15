@@ -67,6 +67,7 @@
 - [HTTP & Networking](stdlib/http.md)
 - [Databases](stdlib/database.md)
 - [Cryptography](stdlib/crypto.md)
+- [Containers](stdlib/container.md)
 - [Utilities](stdlib/utilities.md)
 - [Other Modules](stdlib/other.md)
 
