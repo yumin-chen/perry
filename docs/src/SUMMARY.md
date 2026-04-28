@@ -71,6 +71,16 @@
 - [Utilities](stdlib/utilities.md)
 - [Other Modules](stdlib/other.md)
 
+# Containers
+
+- [Overview](container/overview.md)
+- [Single-Container Lifecycle](container/containers.md)
+- [Compose Orchestration](container/compose.md)
+- [Networking](container/networking.md)
+- [Volumes](container/volumes.md)
+- [Security](container/security.md)
+- [Production Patterns](container/production-patterns.md)
+
 # Internationalization
 
 - [Overview](i18n/overview.md)
