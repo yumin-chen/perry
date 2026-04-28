@@ -1,6 +1,6 @@
 use crate::compose::ComposeEngine;
 use crate::config::ProjectConfig;
-use crate::error::{ComposeError, Result};
+use crate::error::Result;
 use crate::project::ComposeProject;
 use clap::{Args, Parser, Subcommand};
 use std::collections::HashMap;

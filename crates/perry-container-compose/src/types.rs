@@ -629,6 +629,11 @@ impl ComposeService {
             workdir: self.working_dir.clone(),
             cap_add: self.cap_add.clone(),
             cap_drop: self.cap_drop.clone(),
+            // network_aliases is populated separately by ComposeEngine::up
+            // (using the service KEY + any long-form `aliases` from the
+            // compose-spec) — this single-service `to_container_spec`
+            // helper has no service-graph context to derive them from.
+            network_aliases: None,
         }
     }
 
@@ -833,6 +838,15 @@ pub struct ContainerSpec {
     pub workdir: Option<String>,
     pub cap_add: Option<Vec<String>>,
     pub cap_drop: Option<Vec<String>>,
+    /// Additional DNS-resolvable names this container should answer to
+    /// on its attached network (`--network-alias <name>` per entry).
+    /// Populated by `ComposeEngine::up()` from the service key plus any
+    /// long-form `networks: { foo: { aliases: [...] } }` in the spec.
+    /// Sibling containers on the same network can then resolve the
+    /// service key (e.g. `db:5432`) via the runtime's embedded DNS,
+    /// matching docker-compose semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_aliases: Option<Vec<String>>,
 }
 
 /// Handle returned after creating/running a container.

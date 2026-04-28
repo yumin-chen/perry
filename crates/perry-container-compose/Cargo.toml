@@ -39,7 +39,10 @@ proptest = "1"
 default = []
 ffi = []  # Enable FFI exports for Perry TypeScript integration (legacy YAML-path shape;
           # do NOT combine with perry-stdlib container feature — would link-collide)
-integration-tests = []  # Tests that require a running container backend
+# Live-runtime integration tests (require a real OCI runtime). The
+# functional tests under tests/functional_orchestration.rs need
+# `MockBackend` exposed, so this implies `test-utils`.
+integration-tests = ["test-utils"]
 test-utils = []  # Expose `pub mod testing` (mock backend) outside of test builds
 
 [[bin]]

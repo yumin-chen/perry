@@ -42,6 +42,7 @@ pub async fn perry_container_run_capability(
     let profile = SecurityProfile {
         read_only_root: true,
         seccomp: Some("default".to_string()),
+        no_new_privileges: true,
     };
     let handle = backend.run_with_security(&spec, &profile).await.map_err(|e| ContainerError::BackendError { code: -1, message: e.to_string() })?;
 

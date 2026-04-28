@@ -251,8 +251,8 @@ proptest! {
     #[test]
     fn prop_compose_spec_json_round_trip(spec in arb_compose_spec()) {
         let json = serde_json::to_string(&spec).unwrap();
-        let deserialized: ComposeSpec = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&deserialized).unwrap();
+        let deserialised: ComposeSpec = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&deserialised).unwrap();
         prop_assert_eq!(json, json2);
     }
 }

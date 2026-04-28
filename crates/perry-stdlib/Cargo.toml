@@ -90,10 +90,19 @@ perry-updater = { workspace = true }
 # Container subsystem (gated behind the `container` feature). The stdlib
 # container/ module re-exports `perry_container_compose::*` types and
 # delegates orchestration to `ComposeEngine` / `ContainerBackend`.
-# NOTE: do NOT enable the crate's own `ffi` feature here — it exports a
-# *different* legacy `js_compose_*` shape (YAML-file-path-based) that would
-# collide with stdlib's canonical SPEC §9.1 stack-handle signatures at link.
-perry-container-compose = { workspace = true, optional = true }
+#
+# NOTE 1: this is a DIRECT path dep (not `workspace = true`) so the
+# build doesn't break if the `[workspace.dependencies]
+# perry-container-compose` line gets stripped. The `[workspace] members`
+# entry is still required for `cargo build -p perry-container-compose`
+# to succeed — that's enforced by the `crate_in_workspace_members` test
+# in this crate's tests/.
+#
+# NOTE 2: do NOT enable the crate's own `ffi` feature here — it exports
+# a *different* legacy `js_compose_*` shape (YAML-file-path-based) that
+# would collide with stdlib's canonical SPEC §9.1 stack-handle
+# signatures at link.
+perry-container-compose = { path = "../perry-container-compose", optional = true }
 
 thiserror.workspace = true
 anyhow.workspace = true

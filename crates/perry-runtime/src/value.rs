@@ -988,6 +988,47 @@ pub extern "C" fn js_nanbox_is_string(value: f64) -> i32 {
     }
 }
 
+/// Coerce a NaN-boxed value to a `*const StringHeader` suitable for FFI calls
+/// that expect a string argument:
+///
+/// - **String / SSO** → returns the heap-resident `*const StringHeader` (same
+///   path as `js_get_string_pointer_unified`).
+/// - **Anything else** (object literal, array, number, bool, null,
+///   undefined…) → JSON-stringifies via `crate::json::js_json_stringify`
+///   and returns the resulting heap string pointer.
+///
+/// Necessary because user TS code routinely calls native FFIs like
+/// `composeUp({ services: { … } })` with an OBJECT literal where the FFI
+/// expects a JSON string. Pre-fix the codegen `StrPtr` arm passed the raw
+/// object pointer through `js_get_string_pointer_unified`, which fell into
+/// the POINTER_TAG / raw-pointer-fallback branches and returned the bare
+/// object pointer; the FFI then read it as a `StringHeader` (4-byte length
+/// followed by UTF-8) and got garbage, producing
+/// `serde_json::Error: expected value at line 1 column 1`.
+///
+/// The number/bool/null cases are also handled because user code might
+/// pass `js_setSomething(42)` to a `Str`-arg FFI (e.g. error-message
+/// formatters); those used to fall into the number-to-string fallback,
+/// which is fine for primitives but produces `"[object Object]"`-style
+/// stubs for compound values. Routing everything non-string through
+/// `js_json_stringify` gives a uniform, parseable representation.
+#[no_mangle]
+pub extern "C" fn js_value_to_str_ptr_for_ffi(value: f64) -> i64 {
+    let jsval = JSValue::from_bits(value.to_bits());
+    // Already a heap string — fast path, no copy.
+    if jsval.is_string() {
+        return jsval.as_string_ptr() as i64;
+    }
+    // SSO inline string — materialize to heap (same as the unified path).
+    if jsval.is_short_string() {
+        return crate::string::js_string_materialize_to_heap(value) as i64;
+    }
+    // Everything else: JSON-stringify. `type_hint = 0` means "auto-detect"
+    // — `js_json_stringify` walks the value's NaN-boxing tag itself.
+    let ptr = unsafe { crate::json::js_json_stringify(value, 0) };
+    ptr as i64
+}
+
 /// Check if a value should trigger a destructuring default.
 /// Returns 1 if the value is TAG_UNDEFINED, or a bare IEEE NaN (e.g., from
 /// out-of-bounds array read), 0 otherwise. All other NaN-boxed values

@@ -16,7 +16,7 @@ import { ContainerInfo, ContainerLogs } from "perry/container";
 export interface Build {
   /** Build context directory (relative to compose file) */
   context?: string;
-  /** Path to Dockerfile */
+  /** Path to Containerfile */
   dockerfile?: string;
   /** Build-time arguments */
   args?: Record<string, string>;
@@ -26,6 +26,25 @@ export interface Build {
   target?: string;
   /** Network to use during build */
   network?: string;
+}
+
+/**
+ * Container healthcheck (compose-spec §service.healthcheck).
+ *
+ * `interval`, `timeout`, `start_period` accept Go-duration strings
+ * (`"30s"`, `"2m"`, `"1h30m"`); the OCI runtime parses them.
+ *
+ * `test` is either a `["NONE"]` sentinel that disables the image's own
+ * healthcheck, or a `["CMD", "<cmd>", "<arg>", ...]` / `["CMD-SHELL",
+ * "<shell-line>"]` form.
+ */
+export interface Healthcheck {
+  test?: string[];
+  interval?: string;
+  timeout?: string;
+  retries?: number;
+  start_period?: string;
+  disable?: boolean;
 }
 
 /**
@@ -56,6 +75,20 @@ export interface Service {
   command?: string | string[];
   /** Networks this service is attached to */
   networks?: string[];
+  /** Healthcheck (compose-spec §service.healthcheck) */
+  healthcheck?: Healthcheck;
+  /** UID / username the container's processes run as (`1000` / `"git"`) */
+  user?: string;
+  /** Working directory inside the container */
+  working_dir?: string;
+  /** Read-only root filesystem */
+  read_only?: boolean;
+  /** Privileged mode */
+  privileged?: boolean;
+  /** Linux capabilities to add (e.g. `["NET_ADMIN"]`) */
+  cap_add?: string[];
+  /** Linux capabilities to drop (e.g. `["ALL"]`) */
+  cap_drop?: string[];
 }
 
 /**
@@ -65,6 +98,17 @@ export interface ComposeNetwork {
   driver?: string;
   external?: boolean;
   name?: string;
+  /**
+   * Internal-only network: containers attached can only reach other
+   * containers on the same network — no external bridge / routing,
+   * no host-network egress. Use this for the database side of a
+   * web/db split so postgres etc. can't be reached from the host.
+   */
+  internal?: boolean;
+  /** Driver-specific options */
+  driver_opts?: Record<string, string>;
+  /** Labels */
+  labels?: Record<string, string>;
 }
 
 /**
@@ -134,34 +178,45 @@ export function down(handle: ComposeHandle, options?: DownOptions): Promise<void
 
 /**
  * List service statuses in a stack.
+ *
  * @param handle Stack handle
- * @returns Array of ContainerInfo entries
+ * @returns Promise resolving to a **JSON-encoded** `ContainerInfo[]`
+ *   string. Call `JSON.parse(await ps(handle))` to recover the array.
+ *   The JSON-string return shape reflects Perry's current FFI
+ *   contract; server-side array-materialization is a planned
+ *   ergonomics task.
  */
-export function ps(handle: ComposeHandle): Promise<ContainerInfo[]>;
+export function ps(handle: ComposeHandle): Promise<string>;
 
 /**
  * Get logs from services in a stack.
+ *
  * @param handle Stack handle
  * @param options Log options
- * @returns Promise resolving to ContainerLogs
+ * @returns Promise resolving to a **JSON-encoded** `ContainerLogs`
+ *   string. Call `JSON.parse(await logs(handle, opts))` to recover
+ *   `{ stdout, stderr }`.
  */
 export function logs(
   handle: ComposeHandle,
   options?: LogsOptions
-): Promise<ContainerLogs>;
+): Promise<string>;
 
 /**
  * Execute a command in a running service container within a stack.
+ *
  * @param handle Stack handle
  * @param service Service name
  * @param cmd Command and arguments to execute
- * @returns Promise resolving to ContainerLogs
+ * @returns Promise resolving to a **JSON-encoded** `ContainerLogs`
+ *   string. Call `JSON.parse(await exec(handle, svc, cmd))` to recover
+ *   `{ stdout, stderr }`.
  */
 export function exec(
   handle: ComposeHandle,
   service: string,
   cmd: string[]
-): Promise<ContainerLogs>;
+): Promise<string>;
 
 /**
  * Get the resolved compose configuration.

@@ -355,6 +355,7 @@ impl WorkloadGraphEngine {
                 } else {
                     None
                 },
+                ..Default::default()
             };
 
             match self.backend.run_with_security(&spec, &profile).await {

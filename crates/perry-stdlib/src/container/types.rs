@@ -36,7 +36,15 @@ pub unsafe fn parse_container_spec(ptr: *const perry_runtime::StringHeader) -> R
 
 pub unsafe fn parse_compose_spec(ptr: *const perry_runtime::StringHeader) -> Result<perry_container_compose::types::ComposeSpec, String> {
     let json = string_from_header(ptr).ok_or("Invalid JSON")?;
-    serde_json::from_str(&json).map_err(|e| e.to_string())
+    // Apply env-var interpolation (`${VAR}` / `${VAR:-default}`) BEFORE
+    // JSON parsing — the spec from TS object literals carries placeholder
+    // strings verbatim (e.g. POSTGRES_USER=`${FORGEJO_DB_USER:-forgejo}`),
+    // and the FFI is the canonical interpolation point per SPEC §7.8 / §7.9.
+    // Pre-fix postgres rejected the literal `$`-prefixed username with
+    // "FATAL: invalid character in extension owner".
+    let env: HashMap<String, String> = std::env::vars().collect();
+    let interpolated = perry_container_compose::yaml::interpolate(&json, &env);
+    serde_json::from_str(&interpolated).map_err(|e| e.to_string())
 }
 
 pub fn take_compose_handle(id: u64) -> Option<std::sync::Arc<ComposeEngine>> {

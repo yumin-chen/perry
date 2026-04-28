@@ -518,6 +518,7 @@ pub fn declare_phase_b_strings(module: &mut LlModule) {
     module.declare_function("js_regexp_new", I64, &[I64, I64]);
     module.declare_function("js_regexp_test", I32, &[I64, I64]);
     module.declare_function("js_get_string_pointer_unified", I64, &[DOUBLE]);
+    module.declare_function("js_value_to_str_ptr_for_ffi", I64, &[DOUBLE]);
     module.declare_function("js_bigint_from_string", I64, &[PTR, I32]);
     module.declare_function("js_bigint_from_f64", I64, &[DOUBLE]);
     module.declare_function("js_bigint_cmp", I32, &[I64, I64]);

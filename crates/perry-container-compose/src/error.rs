@@ -48,6 +48,20 @@ pub enum ComposeError {
 
     #[error("Specified backend '{name}' is not available: {reason}")]
     BackendNotAvailable { name: String, reason: String },
+
+    /// Strict-mode `up()` aborted because at least one service's spec
+    /// references features the chosen backend cannot honor. The user
+    /// opted into Strict via `ComposeEngine::with_enforcement(...)`;
+    /// fail loud rather than silently downgrade the spec. The `details`
+    /// field carries a `; `-joined summary `<service>: <field> (<reason>)`
+    /// so log scrapers can extract the offending axes without parsing
+    /// the trace stream.
+    #[error("Backend '{backend}' cannot honor the spec for service '{service}': {details}")]
+    EnforcementViolation {
+        backend: String,
+        service: String,
+        details: String,
+    },
 }
 
 fn serialize_error<S, E>(e: &E, s: S) -> std::result::Result<S::Ok, S::Error>
