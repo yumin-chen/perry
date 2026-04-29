@@ -235,8 +235,7 @@ pub(super) fn lower_call(ctx: &mut LoweringContext, call: &ast::CallExpr) -> Res
                                         | ("path", "win32")
                                 );
                                 if !is_sub_namespace {
-                                    if let ast::MemberProp::Ident(method_ident) =
-                                        &outer_member.prop
+                                    if let ast::MemberProp::Ident(method_ident) = &outer_member.prop
                                     {
                                         let method_name = method_ident.sym.to_string();
                                         return Ok(Expr::NativeMethodCall {
