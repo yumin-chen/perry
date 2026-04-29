@@ -214,7 +214,11 @@ jobs:
           REPORT="test-parity/reports/latest.json"
           KNOWN="test-parity/known_failures.json"
 
-          jq -r '(.failures.parity // []) + (.failures.compile // []) | .[]' "$REPORT" | sort -u > /tmp/all_fails.txt
+          # Filter empty strings — `run_parity_tests.sh` emits `compile: [""]`
+          # when there are zero compile failures (a printf+sed quirk in the
+          # JSON generator), and that empty entry would propagate to a
+          # spurious "NEW FAILURES:  - " line and fail this gate.
+          jq -r '(.failures.parity // []) + (.failures.compile // []) | .[] | select(. != "")' "$REPORT" | sort -u > /tmp/all_fails.txt
           if [[ -f "$KNOWN" ]]; then
             jq -r 'keys[]' "$KNOWN" | sort -u > /tmp/known.txt
           else
