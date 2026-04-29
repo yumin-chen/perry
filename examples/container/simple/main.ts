@@ -8,25 +8,38 @@
  *   perry main.ts -o simple
  *   ./simple                                    # uses platform default
  *   PERRY_CONTAINER_BACKEND=docker ./simple     # pin a specific runtime
+ *
+ * Note on the `setTimeout` calls below: Perry's runtime currently
+ * doesn't keep the event loop alive purely on a pending FFI Promise,
+ * so a small `setTimeout` after each container op gives the tokio
+ * task time to complete before the next `await`. Without it, `up()`
+ * silently exits before the container is created. This is a Perry
+ * runtime issue (tracked separately); every working compose example
+ * uses the same workaround.
  */
 
 import { up, down, ps } from 'perry/compose';
 import { getBackend } from 'perry/container';
 
 async function main() {
-  console.log(`backend: ${getBackend()}`);
+  console.log('backend:', getBackend());
+  console.log('starting stack...');
 
   const stack = await up({
+    version: '3.8',
     services: {
       web: {
         image: 'nginx:alpine',
         container_name: 'perry-example-simple-nginx',
         ports: ['18080:80'],
-        labels: { app: 'simple-nginx' },
       },
     },
   });
-  console.log(`stack handle: ${String(stack)}`);
+  console.log('stack handle:', String(stack));
+
+  // Keep the runtime alive long enough for `up`'s tokio task to
+  // settle the Promise (see header note).
+  await new Promise((r) => setTimeout(r, 500));
 
   // ps returns a JSON-encoded ContainerInfo[] — parse it.
   const statuses = JSON.parse(await ps(stack));
@@ -35,8 +48,11 @@ async function main() {
     console.log(`  ${s.name}\t${s.status}`);
   }
 
+  await new Promise((r) => setTimeout(r, 200));
+  console.log('tearing down...');
   await down(stack, { volumes: false });
   console.log('done');
+  console.log('PASS');
 }
 
 main().catch((err) => {
