@@ -364,9 +364,9 @@ pub(crate) fn lower_call(ctx: &mut FnCtx<'_>, callee: &Expr, args: &[Expr]) -> R
                 lowered_args
             };
 
-            if effective_args.len() > 5 {
+            if effective_args.len() > 16 {
                 bail!(
-                    "perry-codegen Phase D.1: closure call with {} args (max 5)",
+                    "perry-codegen Phase D.1: closure call with {} args (max 16)",
                     effective_args.len()
                 );
             }
