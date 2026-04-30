@@ -5411,7 +5411,12 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
 
             // Issue #302: resolve iterable type from either local var or
             // class instance field (`this.someMap`). Was limited to
-            // `Ident` only.
+            // `Ident` only. Issue #311 extends to plain object property
+            // access (`obj.m` where `obj` is a local with an inferred
+            // `Type::Object` shape) — without this arm `for (const x of
+            // obj.m)` fell through to `None`, the loop read `.length` on
+            // a raw Map handle (returns 0), and silently iterated zero
+            // times.
             let iterable_type: Option<Type> = match &*for_of_stmt.right {
                 ast::Expr::Ident(ident) => ctx.lookup_local_type(ident.sym.as_ref()).cloned(),
                 ast::Expr::Member(m) => {
@@ -5422,6 +5427,21 @@ fn lower_stmt(ctx: &mut LoweringContext, module: &mut Module, stmt: &ast::Stmt) 
                             ctx.lookup_class_field_type(&cls, p.sym.as_ref()).cloned()
                         } else {
                             None
+                        }
+                    } else if let ast::MemberProp::Ident(p) = &m.prop {
+                        let obj_ty = crate::lower_types::infer_type_from_expr(&m.obj, ctx);
+                        match obj_ty {
+                            Type::Object(ot) => {
+                                ot.properties.get(p.sym.as_ref()).map(|pi| pi.ty.clone())
+                            }
+                            // Class instance: receiver is `new Example()` or
+                            // a local typed `Example`. Consult the same
+                            // class_field_types registry the `this.<field>`
+                            // arm uses (populated for #302).
+                            Type::Named(cls) => {
+                                ctx.lookup_class_field_type(&cls, p.sym.as_ref()).cloned()
+                            }
+                            _ => None,
                         }
                     } else {
                         None

@@ -3671,6 +3671,10 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
             // silently skipping the loop body. Now also resolves
             // `Member { obj: This, prop: ident }` via the class field
             // type registry so class instance fields work too.
+            // Issue #311 extends to plain object property access
+            // (`obj.m` where `obj` is a local with an inferred
+            // `Type::Object` shape) — same silent-zero-iterations
+            // symptom as #302, just a different missing arm.
             let iterable_type: Option<Type> = match &*for_of_stmt.right {
                 ast::Expr::Ident(ident) => ctx.lookup_local_type(ident.sym.as_ref()).cloned(),
                 ast::Expr::Member(m) => {
@@ -3681,6 +3685,21 @@ pub(crate) fn lower_body_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Re
                             ctx.lookup_class_field_type(&cls, p.sym.as_ref()).cloned()
                         } else {
                             None
+                        }
+                    } else if let ast::MemberProp::Ident(p) = &m.prop {
+                        let obj_ty = crate::lower_types::infer_type_from_expr(&m.obj, ctx);
+                        match obj_ty {
+                            Type::Object(ot) => {
+                                ot.properties.get(p.sym.as_ref()).map(|pi| pi.ty.clone())
+                            }
+                            // Class instance: receiver is `new Example()` or
+                            // a local typed `Example`. Consult the same
+                            // class_field_types registry the `this.<field>`
+                            // arm uses (populated for #302).
+                            Type::Named(cls) => {
+                                ctx.lookup_class_field_type(&cls, p.sym.as_ref()).cloned()
+                            }
+                            _ => None,
                         }
                     } else {
                         None
