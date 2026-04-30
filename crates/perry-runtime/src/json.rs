@@ -1405,13 +1405,15 @@ unsafe fn is_object_pointer(ptr: *const u8) -> bool {
         let keys_len = (*keys_arr).length;
         let keys_cap = (*keys_arr).capacity;
         let field_count = (*obj).field_count;
-        // field_count may be larger than keys_len due to pre-allocation (e.g., alloc(0, 8) for 2 keys).
-        // Use keys_len as the authoritative count of actual properties.
-        keys_len <= keys_cap
-            && keys_len > 0
-            && keys_cap < 1000
-            && keys_len <= field_count
-            && field_count < 1000
+        // keys_len is authoritative — the logical property count. field_count
+        // can be EITHER less than keys_len (parser-built objects with ≥9
+        // fields cap field_count at the inline alloc_limit; closes #307;
+        // overflow values live in OVERFLOW_FIELDS — see object.rs:32) OR
+        // greater than keys_len (pre-allocated objects like
+        // `js_object_alloc(0, 8)` for 2 actual keys). Both shapes are real
+        // objects worth stringifying; just sanity-check both fields are
+        // within reasonable bounds.
+        keys_len <= keys_cap && keys_len > 0 && keys_cap < 1000 && field_count < 1000
     } else {
         false
     }
@@ -1801,7 +1803,18 @@ unsafe fn stringify_object_inner(ptr: *const u8, buf: &mut String, depth: u32) {
     // top-level stringify the build is pure overhead vs. the inline slow
     // path below. The arrayof-objects fast path (stringify_array_depth)
     // uses a separate build_shape_prefix_template that's unaffected.
-    if num_fields >= 5 {
+    // Skip the shape-template fast path when the object has overflow fields
+    // (keys_len > num_fields — see object.rs:32 OVERFLOW_FIELDS, ≥9 stored
+    // fields per #307). The template's per-field key prefix array is built
+    // from `min(keys_len, field_count)`, so an overflow object would only
+    // emit its first 8 fields. Falling through to the slow path below uses
+    // `read_field_bits` which routes overflow reads through
+    // `js_object_get_field`'s overflow_get fallback.
+    let has_overflow_fields = unsafe {
+        let keys_arr = (*obj).keys_array;
+        !keys_arr.is_null() && (*keys_arr).length > num_fields
+    };
+    if num_fields >= 5 && !has_overflow_fields {
         if let Some(tmpl_ptr) = shape_template_for(ptr) {
             if try_emit_shape_element(make_pointer_bits(ptr), &*tmpl_ptr, buf, depth) {
                 if depth > MAX_FAST_DEPTH {
@@ -1817,7 +1830,26 @@ unsafe fn stringify_object_inner(ptr: *const u8, buf: &mut String, depth: u32) {
         (keys_arr as *const u8).add(std::mem::size_of::<crate::ArrayHeader>()) as *const f64;
     let fields_ptr =
         (ptr as *const u8).add(std::mem::size_of::<crate::ObjectHeader>()) as *const f64;
-    let actual_fields = std::cmp::min(num_fields, keys_len);
+    // Closes #307: iterate up to keys_len, not min(num_fields, keys_len).
+    // Parser-built objects with ≥9 fields cap field_count at the inline
+    // alloc_limit (max(field_count, 8) physical slots) and store the overflow
+    // values in OVERFLOW_FIELDS (object.rs:32) — so num_fields can be smaller
+    // than keys_len. For inline slots (f < alloc_limit) we still read directly
+    // off fields_ptr; for overflow slots we route through `js_object_get_field`
+    // which checks field_count and falls through to `overflow_get`. Pre-fix
+    // (`std::cmp::min(num_fields, keys_len)`) silently dropped the overflow
+    // fields and `is_object_pointer`'s `keys_len <= field_count` guard
+    // returned false, so `JSON.stringify` emitted the literal string "null"
+    // for any parsed object with ≥9 fields.
+    let alloc_limit = std::cmp::max(num_fields, 8);
+    let read_field_bits = |f: u32| -> u64 {
+        if f < alloc_limit {
+            (*fields_ptr.add(f as usize)).to_bits()
+        } else {
+            crate::object::js_object_get_field(obj, f).bits()
+        }
+    };
+    let actual_fields = keys_len;
 
     // Deferred toJSON + closure checks (issue #67 tightening): scan fields
     // once to detect if any field is actually a closure. For data-only
@@ -1831,7 +1863,7 @@ unsafe fn stringify_object_inner(ptr: *const u8, buf: &mut String, depth: u32) {
     let has_closure_field = {
         let mut found = false;
         for f in 0..actual_fields {
-            let bits = (*fields_ptr.add(f as usize)).to_bits();
+            let bits = read_field_bits(f);
             let tag = bits & 0xFFFF_0000_0000_0000;
             let ptr_candidate = if tag == POINTER_TAG {
                 (bits & POINTER_MASK) as *const u8
@@ -1866,8 +1898,8 @@ unsafe fn stringify_object_inner(ptr: *const u8, buf: &mut String, depth: u32) {
     buf.push('{');
     let mut first = true;
     for f in 0..actual_fields {
-        let field_val = *fields_ptr.add(f as usize);
-        let field_bits = field_val.to_bits();
+        let field_bits = read_field_bits(f);
+        let field_val = f64::from_bits(field_bits);
         // Skip undefined per JSON spec
         if field_bits == TAG_UNDEFINED {
             continue;
